@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: line-study-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn line-study-bot:app
+    plan: free
