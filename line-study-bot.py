@@ -22,8 +22,8 @@ from linebot.v3.webhooks import MessageEvent, ImageMessageContent
 # CONFIG
 # =========================
 
-CHANNEL_ACCESS_TOKEN = os.getenv("gLu4qNbaDvdsk3Nz9ZUvsnkGAN8TClRHISpHVU8V9DCpgMa0THfI+f1FYhGbOYGhyixjcYe+sySlKMGzYIU2X947sJ1CSO+1oJHgUJjj3VFa+5d+tay4465pvGxS+dVGXDP5maymdAyVEhvnYVQiFQdB04t89/1O/w1cDnyilFU=")
-CHANNEL_SECRET = os.getenv("10e34695e0d031f358ac1b6caeb1e118")
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
     print("Missing LINE credentials")
