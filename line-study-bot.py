@@ -1,238 +1,281 @@
 import os
-import json
-import datetime
-import tempfile
+import sqlite3
 import requests
-import pytesseract
+from datetime import datetime
 
 from flask import Flask, request, abort
-from PIL import Image
 
-from linebot.v3.webhook import WebhookHandler
+from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
-    MessagingApi,
     Configuration,
     ApiClient,
+    MessagingApi,
     ReplyMessageRequest,
     TextMessage
 )
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.webhooks import (
-    MessageEvent,
-    TextMessageContent,
-    ImageMessageContent
-)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
 
-# ====================================
+# =========================
 # CONFIG
-# ====================================
+# =========================
 
-CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
-CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+OCR_API_KEY = os.getenv("OCR_API_KEY")
 
 if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
-    raise Exception("Missing LINE credentials in Render Environment Variables")
+    print("Missing LINE credentials")
+    exit()
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 app = Flask(__name__)
 
-DATA_FILE = "streak.json"
+MAX_DAILY_STREAK = 3
 
-# ====================================
-# STREAK FUNCTIONS
-# ====================================
+# =========================
+# DATABASE
+# =========================
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+conn = sqlite3.connect("streak.db", check_same_thread=False)
+cursor = conn.cursor()
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    streak INTEGER,
+    last_date TEXT
+)
+""")
 
-def update_streak(user_id):
+conn.commit()
 
-    data = load_data()
+# =========================
+# STUDY APPS
+# =========================
 
-    today = datetime.date.today()
+STUDY_APPS = [
+    "goodnotes",
+    "notability",
+    "onenote",
+    "collanote",
+    "notion",
+    "forest",
+    "quizlet",
+    "duolingo",
+    "canvas",
+    "moodle",
+    "study"
+]
 
-    if user_id not in data:
+# =========================
+# OCR USING OCR.SPACE API
+# =========================
 
-        data[user_id] = {
-            "streak": 1,
-            "last_date": today.isoformat()
-        }
+def extract_text_ocr_space(image_path):
 
-    else:
+    with open(image_path, 'rb') as f:
 
-        last_date = datetime.date.fromisoformat(data[user_id]["last_date"])
+        response = requests.post(
+            'https://api.ocr.space/parse/image',
+            files={'file': f},
+            data={
+                'apikey': OCR_API_KEY,
+                'language': 'eng'
+            }
+        )
 
-        if today == last_date:
-            pass
+    result = response.json()
 
-        elif today == last_date + datetime.timedelta(days=1):
-            data[user_id]["streak"] += 1
-
-        else:
-            data[user_id]["streak"] = 1
-
-        data[user_id]["last_date"] = today.isoformat()
-
-    save_data(data)
-
-    return data[user_id]["streak"]
-
-def get_streak(user_id):
-
-    data = load_data()
-
-    if user_id not in data:
-        return 0
-
-    return data[user_id]["streak"]
-
-# ====================================
-# OCR FUNCTION
-# ====================================
-
-def extract_text_from_image(image_path):
-
-    try:
-
-        img = Image.open(image_path)
-
-        text = pytesseract.image_to_string(img)
-
-        return text.strip()
-
-    except:
+    if result["IsErroredOnProcessing"]:
         return ""
 
-# ====================================
-# ROUTES
-# ====================================
+    return result["ParsedResults"][0]["ParsedText"].lower()
 
-@app.route("/")
-def home():
-    return "LINE Study Bot Running"
+
+# =========================
+# DETECT HOURS
+# =========================
+
+def detect_hours(text):
+
+    total = 0
+
+    lines = text.split("\n")
+
+    for line in lines:
+
+        if any(app in line for app in STUDY_APPS):
+
+            words = line.split()
+
+            for w in words:
+
+                if w.isdigit():
+                    total += int(w)
+                    break
+
+    return min(total, MAX_DAILY_STREAK)
+
+
+# =========================
+# UPDATE STREAK
+# =========================
+
+def update_streak(user_id, hours):
+
+    today = datetime.now().date()
+
+    cursor.execute(
+        "SELECT streak, last_date FROM users WHERE user_id=?",
+        (user_id,)
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+
+        cursor.execute(
+            "INSERT INTO users VALUES (?, ?, ?)",
+            (user_id, hours, today)
+        )
+
+        conn.commit()
+
+        return hours
+
+    streak, last_date = row
+
+    last_date = datetime.strptime(last_date, "%Y-%m-%d").date()
+
+    days_missed = (today - last_date).days
+
+    if days_missed >= 1:
+        streak = max(streak - 1, 0)
+
+    streak += hours
+
+    cursor.execute(
+        "UPDATE users SET streak=?, last_date=? WHERE user_id=?",
+        (streak, today, user_id)
+    )
+
+    conn.commit()
+
+    return streak
+
+
+# =========================
+# CALLBACK
+# =========================
 
 @app.route("/callback", methods=["POST"])
 def callback():
 
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature")
+
     body = request.get_data(as_text=True)
 
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError:
+
+    except Exception as e:
+        print("Webhook error:", e)
         abort(400)
 
     return "OK"
 
-# ====================================
-# HANDLE TEXT
-# ====================================
+
+# =========================
+# TEXT COMMAND HANDLER
+# =========================
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
 
-    user_id = event.source.user_id
     text = event.message.text.lower()
+
+    user_id = event.source.user_id
+
+    if text == "study":
+
+        streak = update_streak(user_id, 1)
+
+        reply = f"🔥 Study +1 streak!\nTotal streak: {streak}"
+
+    else:
+
+        reply = "Send 'study' or upload study screenshot"
 
     with ApiClient(configuration) as api_client:
 
-        line_bot_api = MessagingApi(api_client)
-
-        if text == "study":
-
-            streak = update_streak(user_id)
-
-            reply = (
-                "✅ Study recorded!\n"
-                f"🔥 Current streak: {streak} days"
-            )
-
-        elif text == "streak":
-
-            streak = get_streak(user_id)
-
-            reply = f"🔥 Your streak: {streak} days"
-
-        elif text == "hello":
-
-            reply = (
-                "Hello!\n\n"
-                "Commands:\n"
-                "study → record study\n"
-                "streak → check streak\n"
-                "or send study screenshot"
-            )
-
-        else:
-
-            reply = (
-                "Commands:\n"
-                "study\n"
-                "streak"
-            )
-
-        line_bot_api.reply_message(
+        MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=reply)]
             )
         )
 
-# ====================================
-# HANDLE IMAGE (OCR)
-# ====================================
+
+# =========================
+# IMAGE HANDLER
+# =========================
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event):
 
     user_id = event.source.user_id
+
     message_id = event.message.id
-
-    headers = {
-        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
-    }
-
-    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
-
-    response = requests.get(url, headers=headers)
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-
-        f.write(response.content)
-
-        temp_path = f.name
-
-    extracted_text = extract_text_from_image(temp_path)
-
-    streak = update_streak(user_id)
-
-    reply = (
-        "📷 Study image recorded!\n"
-        f"🔥 Current streak: {streak} days\n\n"
-        f"OCR detected:\n{extracted_text[:100]}"
-    )
 
     with ApiClient(configuration) as api_client:
 
-        line_bot_api = MessagingApi(api_client)
+        image = MessagingApi(api_client).get_message_content(message_id)
 
-        line_bot_api.reply_message(
+        path = f"{user_id}.jpg"
+
+        with open(path, "wb") as f:
+
+            for chunk in image.iter_content():
+                f.write(chunk)
+
+    text = extract_text_ocr_space(path)
+
+    hours = detect_hours(text)
+
+    if hours == 0:
+
+        reply = "❌ No study apps detected"
+
+    else:
+
+        streak = update_streak(user_id, hours)
+
+        reply = f"✅ Study detected: {hours} hour(s)\n🔥 Total streak: {streak}"
+
+    with ApiClient(configuration) as api_client:
+
+        MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=reply)]
             )
         )
 
-# ====================================
+
+# =========================
+# HOME
+# =========================
+
+@app.route("/")
+def home():
+    return "Study Streak Bot Running"
+
+
+# =========================
+# START
+# =========================
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=10000)
