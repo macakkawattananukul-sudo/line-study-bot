@@ -33,8 +33,29 @@ def callback():
 
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
+    user_streak = {}
+
+    @handler.add(MessageEvent, message=TextMessage)
+    def handle_message(event):
+        user_id = event.source.user_id
+        text = event.message.text.lower()
+
+        if text == "study":
+            if user_id not in user_streak:
+                user_streak[user_id] = 1
+            else:
+                user_streak[user_id] += 1
+
+            reply = f"🔥 Study streak: {user_streak[user_id]} days!"
+        else:
+            reply = "Send 'study' to increase streak."
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
+            )
+        )
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
