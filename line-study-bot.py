@@ -1,7 +1,3 @@
-# =========================
-# IMPORTS (MUST BE TOP)
-# =========================
-
 import os
 import json
 import requests
@@ -9,7 +5,13 @@ from datetime import datetime, timedelta
 
 from flask import Flask, request, abort
 
-from linebot.v3.webhook import WebhookHandler, MessageEvent, TextMessageContent, ImageMessageContent
+from linebot.v3.webhooks import (
+    WebhookHandler,
+    MessageEvent,
+    TextMessageContent,
+    ImageMessageContent
+)
+
 from linebot.v3.messaging import (
     Configuration,
     ApiClient,
