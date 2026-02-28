@@ -1,11 +1,15 @@
 import os
 import json
 import requests
-from datetime import datetime, date
+import re
+from datetime import datetime, timedelta
 
 from flask import Flask, request, abort
 
-# LINE SDK v3
+# LINE SDK v3 FIXED IMPORTS
+from linebot.v3.webhook import WebhookHandler
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
+
 from linebot.v3.messaging import (
     Configuration,
     ApiClient,
@@ -15,142 +19,29 @@ from linebot.v3.messaging import (
     TextMessage
 )
 
-from linebot.v3.webhook import WebhookHandler
+# =========================
+# CONFIGURATION
+# =========================
 
-from linebot.v3.webhooks import (
-    MessageEvent,
-    ImageMessageContent,
-    TextMessageContent
-)
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
+OCR_API_KEY = os.environ.get("OCR_API_KEY")
 
-# =====================
-# ENV
-# =====================
-
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-OCR_API_KEY = os.getenv("OCR_API_KEY")
-
-# =====================
-# LINE CONFIG
-# =====================
+if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not OCR_API_KEY:
+    raise Exception("Missing environment variables")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# =====================
-# APP
-# =====================
+# =========================
+# FLASK APP
+# =========================
 
 app = Flask(__name__)
 
-# =====================
-# STREAK FILE
-# =====================
-
-STREAK_FILE = "streaks.json"
-
-
-def load_streaks():
-    if not os.path.exists(STREAK_FILE):
-        return {}
-
-    with open(STREAK_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_streaks(data):
-    with open(STREAK_FILE, "w") as f:
-        json.dump(data, f)
-
-
-# =====================
-# STREAK SYSTEM
-# =====================
-
-def update_streak(user_id):
-
-    streaks = load_streaks()
-
-    today = date.today()
-
-    if user_id not in streaks:
-
-        streaks[user_id] = {
-            "streak": 1,
-            "last_date": str(today)
-        }
-
-        save_streaks(streaks)
-        return 1, True
-
-
-    last_date = datetime.strptime(
-        streaks[user_id]["last_date"],
-        "%Y-%m-%d"
-    ).date()
-
-    diff = (today - last_date).days
-
-    if diff == 0:
-
-        return streaks[user_id]["streak"], False
-
-    elif diff == 1:
-
-        streaks[user_id]["streak"] += 1
-
-    else:
-
-        streaks[user_id]["streak"] = 1
-
-
-    streaks[user_id]["last_date"] = str(today)
-
-    save_streaks(streaks)
-
-    return streaks[user_id]["streak"], True
-
-
-# =====================
-# OCR
-# =====================
-
-def ocr_space_file(image_bytes):
-
-    url = "https://api.ocr.space/parse/image"
-
-    payload = {
-        "apikey": OCR_API_KEY,
-        "language": "eng"
-    }
-
-    files = {
-        "file": ("image.jpg", image_bytes)
-    }
-
-    response = requests.post(
-        url,
-        files=files,
-        data=payload
-    )
-
-    result = response.json()
-
-    if result.get("ParsedResults"):
-        return result["ParsedResults"][0]["ParsedText"].strip()
-
-    return ""
-
-
-# =====================
-# ROUTES
-# =====================
-
 @app.route("/")
 def home():
-    return "Study Bot Running 🔥"
-
+    return "Study ScreenTime Bot Running ✅"
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -161,90 +52,122 @@ def callback():
     try:
         handler.handle(body, signature)
     except Exception as e:
-        print(e)
+        print("Webhook error:", e)
         abort(400)
 
     return "OK"
 
 
-# =====================
-# HANDLE IMAGE
-# =====================
+# =========================
+# STREAK SYSTEM
+# =========================
 
-@handler.add(MessageEvent, message=ImageMessageContent)
-def handle_image(event):
-
-    user_id = event.source.user_id
-
-    try:
-
-        with ApiClient(configuration) as api_client:
-
-            blob_api = MessagingApiBlob(api_client)
-
-            image_bytes = blob_api.get_message_content(
-                event.message.id
-            )
+DATA_FILE = "streak.json"
 
 
-        text = ocr_space_file(image_bytes)
+def load_data():
 
-        if text:
+    if not os.path.exists(DATA_FILE):
+        return {}
 
-            streak, updated = update_streak(user_id)
-
-            reply = (
-                "📚 Study detected!\n\n"
-                f"🔥 Streak: {streak} days\n\n"
-                f"Detected:\n{text[:200]}"
-            )
-
-        else:
-
-            reply = "❌ No study text detected."
-
-    except Exception as e:
-
-        print(e)
-        reply = "⚠️ OCR Error."
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
 
-    with ApiClient(configuration) as api_client:
+def save_data(data):
 
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply)]
-            )
-        )
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
 
 
-# =====================
-# HANDLE TEXT
-# =====================
+def update_streak(user_id):
+
+    data = load_data()
+    today = datetime.now().date()
+
+    if user_id not in data:
+
+        data[user_id] = {
+            "streak": 1,
+            "last_date": str(today)
+        }
+
+        save_data(data)
+        return 1
+
+    last_date = datetime.strptime(
+        data[user_id]["last_date"], "%Y-%m-%d"
+    ).date()
+
+    if last_date == today:
+        return data[user_id]["streak"]
+
+    if last_date == today - timedelta(days=1):
+        data[user_id]["streak"] += 1
+    else:
+        data[user_id]["streak"] = 1
+
+    data[user_id]["last_date"] = str(today)
+
+    save_data(data)
+
+    return data[user_id]["streak"]
+
+
+# =========================
+# SCREEN TIME DETECTION
+# =========================
+
+def detect_study_from_screentime(text):
+
+    text = text.lower()
+
+    categories = [
+        "productivity & finance",
+        "productivity",
+        "education",
+        "reference",
+        "books"
+    ]
+
+    category_detected = any(cat in text for cat in categories)
+
+    time_detected = bool(re.search(r"\d+h|\d+m", text))
+
+    return category_detected and time_detected
+
+
+# =========================
+# TEXT HANDLER
+# =========================
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
 
+    user_id = event.source.user_id
     text = event.message.text.lower()
 
-    if text == "streak":
+    if text == "study":
 
-        streaks = load_streaks()
+        streak = update_streak(user_id)
 
-        user_id = event.source.user_id
+        reply = f"📚 Study recorded!\n🔥 Streak: {streak} days"
 
-        if user_id in streaks:
-            streak = streaks[user_id]["streak"]
+    elif text == "streak":
+
+        data = load_data()
+
+        if user_id in data:
+            reply = f"🔥 Your streak: {data[user_id]['streak']} days"
         else:
-            streak = 0
-
-        reply = f"🔥 Your streak: {streak} days"
+            reply = "No streak yet."
 
     else:
 
-        reply = "Send study image to gain streak 🔥"
-
+        reply = (
+            "Send Screen Time screenshot 📷\n"
+            "Or type 'study' to manually record."
+        )
 
     with ApiClient(configuration) as api_client:
 
@@ -256,12 +179,85 @@ def handle_text(event):
         )
 
 
-# =====================
-# RUN
-# =====================
+# =========================
+# IMAGE HANDLER (FINAL FIXED)
+# =========================
+
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image(event):
+
+    try:
+
+        user_id = event.source.user_id
+        message_id = event.message.id
+
+        # download image correctly
+        with ApiClient(configuration) as api_client:
+
+            blob_api = MessagingApiBlob(api_client)
+
+            image_data = blob_api.get_message_content(message_id)
+
+        # OCR request
+        response = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": ("image.jpg", image_data)},
+            data={
+                "apikey": OCR_API_KEY,
+                "language": "eng"
+            }
+        )
+
+        result = response.json()
+
+        extracted_text = ""
+
+        if result.get("ParsedResults"):
+            extracted_text = result["ParsedResults"][0]["ParsedText"]
+
+        print("OCR TEXT:", extracted_text)
+
+        # DETECT SCREEN TIME
+        if detect_study_from_screentime(extracted_text):
+
+            streak = update_streak(user_id)
+
+            reply = (
+                "✅ Screen Time Study detected!\n"
+                f"🔥 Streak: {streak} days"
+            )
+
+        else:
+
+            reply = (
+                "❌ No Productivity/Education detected.\n"
+                "Send Screen Time screenshot."
+            )
+
+    except Exception as e:
+
+        print("IMAGE ERROR:", e)
+        reply = "❌ Error reading screenshot."
+
+    with ApiClient(configuration) as api_client:
+
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
+            )
+        )
+
+
+# =========================
+# RENDER START
+# =========================
 
 if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 10000))
 
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
