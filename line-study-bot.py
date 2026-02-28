@@ -1,3 +1,5 @@
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 import os
 import sys
 import json
