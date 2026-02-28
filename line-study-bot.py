@@ -137,61 +137,111 @@ def update_streak(user_id):
 # OCR API
 # ========================
 
-def extract_text_from_image(image_bytes):
+    from linebot.v3.messaging import ApiClient, MessagingApiBlob
+    import requests
 
-    try:
+    @handler.add(MessageEvent, message=ImageMessageContent)
+    def handle_image(event):
 
-        response = requests.post(
-            "https://api.ocr.space/parse/image",
-            files={"file": image_bytes},
-            data={
-                "apikey": OCR_API_KEY,
-                "language": "eng"
-            }
-        )
+        try:
+            message_id = event.message.id
 
-        result = response.json()
+            # Download image from LINE (CORRECT METHOD)
+            with ApiClient(configuration) as api_client:
+                blob_api = MessagingApiBlob(api_client)
+                content = blob_api.get_message_content(message_id)
 
-        return result["ParsedResults"][0]["ParsedText"]
+            image_bytes = b''.join(content.iter_bytes())
 
-    except:
-        return ""
+            # Send image to OCR API
+            response = requests.post(
+                "https://api.ocr.space/parse/image",
+                files={"file": ("image.jpg", image_bytes)},
+                data={
+                    "apikey": OCR_API_KEY,
+                    "language": "eng"
+                }
+            )
 
+            result = response.json()
+
+            if result["IsErroredOnProcessing"]:
+                reply_text(event.reply_token, "❌ OCR failed")
+                return
+
+            text = result["ParsedResults"][0]["ParsedText"]
+
+            hours = extract_hours(text)
+
+            if hours == 0:
+                reply_text(event.reply_token, "❌ No study time detected")
+                return
+
+            streak = update_streak(event.source.user_id)
+
+            reply_text(
+                event.reply_token,
+                f"📷 Study detected: {hours} hour(s)\n🔥 Streak: {streak} day(s)"
+            )
+
+        except Exception as e:
+            print("Image error:", e)
+            reply_text(event.reply_token, "❌ Image processing failed")
 
 # ========================
 # Routes
 # ========================
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is running"
+    from linebot.v3.messaging import ApiClient, MessagingApiBlob
+    import requests
 
+    @handler.add(MessageEvent, message=ImageMessageContent)
+    def handle_image(event):
 
-@app.route("/callback", methods=["POST"])
-def callback():
+        try:
+            message_id = event.message.id
 
-    signature = request.headers.get("X-Line-Signature")
+            # Download image from LINE (CORRECT METHOD)
+            with ApiClient(configuration) as api_client:
+                blob_api = MessagingApiBlob(api_client)
+                content = blob_api.get_message_content(message_id)
 
-    body = request.get_data(as_text=True)
+            image_bytes = b''.join(content.iter_bytes())
 
-    try:
-        handler.handle(body, signature)
-    except Exception as e:
-        print("Webhook error:", e)
-        abort(400)
+            # Send image to OCR API
+            response = requests.post(
+                "https://api.ocr.space/parse/image",
+                files={"file": ("image.jpg", image_bytes)},
+                data={
+                    "apikey": OCR_API_KEY,
+                    "language": "eng"
+                }
+            )
 
-    return "OK"
+            result = response.json()
 
+            if result["IsErroredOnProcessing"]:
+                reply_text(event.reply_token, "❌ OCR failed")
+                return
 
-# ========================
-# Message handler
-# ========================
+            text = result["ParsedResults"][0]["ParsedText"]
 
-@handler.add(MessageEvent)
-def handle_message(event):
+            hours = extract_hours(text)
 
-    user_id = event.source.user_id
+            if hours == 0:
+                reply_text(event.reply_token, "❌ No study time detected")
+                return
 
+            streak = update_streak(event.source.user_id)
+
+            reply_text(
+                event.reply_token,
+                f"📷 Study detected: {hours} hour(s)\n🔥 Streak: {streak} day(s)"
+            )
+
+        except Exception as e:
+            print("Image error:", e)
+            reply_text(event.reply_token, "❌ Image processing failed")
     # ========================
     # TEXT MESSAGE
     # ========================
