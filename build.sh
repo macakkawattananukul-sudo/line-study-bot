@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# force rebuild
 
 set -o errexit
 
