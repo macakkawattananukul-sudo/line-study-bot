@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 
 from flask import Flask, request, abort
 
+from linebot.v3.webhook import WebhookHandler
+
 from linebot.v3.webhooks import (
-    WebhookHandler,
     MessageEvent,
     TextMessageContent,
     ImageMessageContent
@@ -20,7 +21,6 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage
 )
-
 # =========================
 # CONFIGURATION
 # =========================
@@ -228,7 +228,5 @@ def handle_image(event):
 # =========================
 
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
