@@ -1,339 +1,219 @@
+# =========================
+# IMPORTS (MUST BE TOP)
+# =========================
+
 import os
-import re
 import json
-import datetime
 import requests
+from datetime import datetime, timedelta
 
 from flask import Flask, request, abort
 
-# LINE SDK v3 imports
-from linebot.v3.messaging import ApiClient, MessagingApiBlob
-from linebot.v3.webhook import WebhookHandler
+from linebot.v3.webhook import WebhookHandler, MessageEvent, TextMessageContent, ImageMessageContent
 from linebot.v3.messaging import (
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage,
     Configuration,
-    ApiClient
-)
-from linebot.v3.webhooks import (
-    MessageEvent,
-    TextMessageContent,
-    ImageMessageContent
+    ApiClient,
+    MessagingApi,
+    MessagingApiBlob,
+    ReplyMessageRequest,
+    TextMessage
 )
 
-# ========================
-# ENV VARIABLES
-# ========================
+# =========================
+# CONFIGURATION
+# =========================
 
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-OCR_API_KEY = os.getenv("OCR_API_KEY")
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
+OCR_API_KEY = os.environ.get("OCR_API_KEY")
 
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
     raise Exception("Missing LINE credentials")
 
-# ========================
-# LINE setup
-# ========================
-
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-api_client = ApiClient(configuration)
-line_bot_api = MessagingApi(api_client)
-
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ========================
-# Flask app
-# ========================
+# =========================
+# FLASK APP
+# =========================
 
 app = Flask(__name__)
 
-# ========================
-# Database (JSON file)
-# ========================
+@app.route("/")
+def home():
+    return "Study bot running"
 
-DB_FILE = "study_data.json"
+@app.route("/callback", methods=['POST'])
+def callback():
+
+    signature = request.headers.get('X-Line-Signature')
+
+    body = request.get_data(as_text=True)
+
+    try:
+        handler.handle(body, signature)
+    except Exception as e:
+        print("Webhook error:", e)
+        abort(400)
+
+    return "OK"
 
 
-def load_db():
-    if not os.path.exists(DB_FILE):
+# =========================
+# STREAK SYSTEM
+# =========================
+
+DATA_FILE = "streak.json"
+
+
+def load_data():
+
+    if not os.path.exists(DATA_FILE):
         return {}
-    with open(DB_FILE, "r") as f:
+
+    with open(DATA_FILE, "r") as f:
         return json.load(f)
 
 
-def save_db(db):
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f)
+def save_data(data):
 
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
 
-# ========================
-# Extract hours from text
-# ========================
-
-def extract_hours(text):
-
-    text = text.lower()
-
-    patterns = [
-        r"(\d+)\s*h",
-        r"(\d+)\s*hour",
-        r"study\s*(\d+)",
-        r"(\d+)"
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return int(match.group(1))
-
-    return 0
-
-
-# ========================
-# Streak system
-# ========================
 
 def update_streak(user_id):
 
-    db = load_db()
+    data = load_data()
 
-    today = datetime.date.today()
+    today = datetime.now().date()
 
-    if user_id not in db:
+    if user_id not in data:
 
-        db[user_id] = {
+        data[user_id] = {
             "streak": 1,
             "last_date": str(today)
         }
 
-        save_db(db)
+        save_data(data)
         return 1
 
-    last_date = datetime.date.fromisoformat(db[user_id]["last_date"])
-    streak = db[user_id]["streak"]
+    last_date = datetime.strptime(data[user_id]["last_date"], "%Y-%m-%d").date()
 
-    if today == last_date:
+    if last_date == today:
+        return data[user_id]["streak"]
 
-        return streak
+    if last_date == today - timedelta(days=1):
+        data[user_id]["streak"] += 1
+    else:
+        data[user_id]["streak"] = 1
 
-    elif today == last_date + datetime.timedelta(days=1):
+    data[user_id]["last_date"] = str(today)
 
-        streak += 1
+    save_data(data)
+
+    return data[user_id]["streak"]
+
+
+# =========================
+# TEXT MESSAGE HANDLER
+# =========================
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_text(event):
+
+    user_id = event.source.user_id
+    text = event.message.text.lower()
+
+    if text == "study":
+
+        streak = update_streak(user_id)
+
+        reply = f"📚 Study recorded!\n🔥 Current streak: {streak} days"
+
+    elif text == "streak":
+
+        data = load_data()
+
+        if user_id in data:
+            reply = f"🔥 Your streak: {data[user_id]['streak']} days"
+        else:
+            reply = "No streak yet. Send 'study' to start!"
 
     else:
 
-        streak = 1
+        reply = "Send 'study' to record your study streak 📚\nOr send a screenshot."
 
-    db[user_id]["streak"] = streak
-    db[user_id]["last_date"] = str(today)
+    with ApiClient(configuration) as api_client:
 
-    save_db(db)
-
-    return streak
-
-
-# ========================
-# OCR API
-# ========================
-
-    from linebot.v3.messaging import ApiClient, MessagingApiBlob
-    import requests
-
-    @handler.add(MessageEvent, message=ImageMessageContent)
-    def handle_image(event):
-
-        try:
-            message_id = event.message.id
-
-            # Download image from LINE (CORRECT METHOD)
-            with ApiClient(configuration) as api_client:
-                blob_api = MessagingApiBlob(api_client)
-                content = blob_api.get_message_content(message_id)
-
-            image_bytes = b''.join(content.iter_bytes())
-
-            # Send image to OCR API
-            response = requests.post(
-                "https://api.ocr.space/parse/image",
-                files={"file": ("image.jpg", image_bytes)},
-                data={
-                    "apikey": OCR_API_KEY,
-                    "language": "eng"
-                }
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
             )
+        )
 
-            result = response.json()
 
-            if result["IsErroredOnProcessing"]:
-                reply_text(event.reply_token, "❌ OCR failed")
-                return
+# =========================
+# IMAGE HANDLER WITH OCR
+# =========================
 
-            text = result["ParsedResults"][0]["ParsedText"]
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image(event):
 
-            hours = extract_hours(text)
+    try:
 
-            if hours == 0:
-                reply_text(event.reply_token, "❌ No study time detected")
-                return
+        message_id = event.message.id
+        user_id = event.source.user_id
 
-            streak = update_streak(event.source.user_id)
+        # download image from LINE
+        with ApiClient(configuration) as api_client:
 
-            reply_text(
-                event.reply_token,
-                f"📷 Study detected: {hours} hour(s)\n🔥 Streak: {streak} day(s)"
-            )
+            blob_api = MessagingApiBlob(api_client)
 
-        except Exception as e:
-            print("Image error:", e)
-            reply_text(event.reply_token, "❌ Image processing failed")
+            content = blob_api.get_message_content(message_id)
 
-# ========================
-# Routes
-# ========================
+            image_data = content.read()
 
-    from linebot.v3.messaging import ApiClient, MessagingApiBlob
-    import requests
+        # send to OCR API
+        response = requests.post(
+            "https://api.ocr.space/parse/image",
+            files={"file": ("image.jpg", image_data)},
+            data={
+                "apikey": OCR_API_KEY,
+                "language": "eng"
+            },
+        )
 
-    @handler.add(MessageEvent, message=ImageMessageContent)
-    def handle_image(event):
+        result = response.json()
 
-        try:
-            message_id = event.message.id
+        extracted_text = ""
 
-            # Download image from LINE (CORRECT METHOD)
-            with ApiClient(configuration) as api_client:
-                blob_api = MessagingApiBlob(api_client)
-                content = blob_api.get_message_content(message_id)
+        if result.get("ParsedResults"):
+            extracted_text = result["ParsedResults"][0]["ParsedText"]
 
-            image_bytes = b''.join(content.iter_bytes())
+        print("OCR TEXT:", extracted_text)
 
-            # Send image to OCR API
-            response = requests.post(
-                "https://api.ocr.space/parse/image",
-                files={"file": ("image.jpg", image_bytes)},
-                data={
-                    "apikey": OCR_API_KEY,
-                    "language": "eng"
-                }
-            )
+        # check if contains study indicators
+        keywords = ["study", "goodnotes", "classroom", "revision", "notes"]
 
-            result = response.json()
+        if any(word in extracted_text.lower() for word in keywords):
 
-            if result["IsErroredOnProcessing"]:
-                reply_text(event.reply_token, "❌ OCR failed")
-                return
+            streak = update_streak(user_id)
 
-            text = result["ParsedResults"][0]["ParsedText"]
-
-            hours = extract_hours(text)
-
-            if hours == 0:
-                reply_text(event.reply_token, "❌ No study time detected")
-                return
-
-            streak = update_streak(event.source.user_id)
-
-            reply_text(
-                event.reply_token,
-                f"📷 Study detected: {hours} hour(s)\n🔥 Streak: {streak} day(s)"
-            )
-
-        except Exception as e:
-            print("Image error:", e)
-            reply_text(event.reply_token, "❌ Image processing failed")
-    # ========================
-    # TEXT MESSAGE
-    # ========================
-
-    if isinstance(event.message, TextMessageContent):
-
-        text = event.message.text.lower()
-
-        if text.startswith("study"):
-
-            hours = extract_hours(text)
-
-            if hours > 0:
-
-                streak = update_streak(user_id)
-
-                reply = (
-                    f"📚 Logged {hours} hour(s)\n"
-                    f"🔥 Streak: {streak} day(s)"
-                )
-
-            else:
-
-                reply = "Example: study 2h"
-
-        elif text == "streak":
-
-            db = load_db()
-
-            if user_id in db:
-                reply = f"🔥 Current streak: {db[user_id]['streak']} day(s)"
-            else:
-                reply = "No streak yet"
+            reply = f"📷 Study detected from screenshot!\n🔥 Streak: {streak} days"
 
         else:
 
-            reply = (
-                "Commands:\n"
-                "study 2h\n"
-                "streak\n"
-                "or send study screenshot"
-            )
+            reply = "📷 Screenshot received, but no study detected."
 
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply)]
-            )
-        )
+    except Exception as e:
 
-    # ========================
-    # IMAGE MESSAGE (FIXED)
-    # ========================
+        print("OCR ERROR:", e)
+        reply = "Error reading image."
 
-    elif isinstance(event.message, ImageMessageContent):
+    with ApiClient(configuration) as api_client:
 
-        try:
-
-            message_id = event.message.id
-
-            message_content = line_bot_api.get_message_content(message_id)
-
-            image_bytes = b""
-
-            for chunk in message_content.iter_content():
-                image_bytes += chunk
-
-            text = extract_text_from_image(image_bytes)
-
-            hours = extract_hours(text)
-
-            if hours > 0:
-
-                streak = update_streak(user_id)
-
-                reply = (
-                    f"📷 Study detected: {hours} hour(s)\n"
-                    f"🔥 Streak: {streak} day(s)"
-                )
-
-            else:
-
-                reply = "Could not detect study hours"
-
-        except Exception as e:
-
-            print("Image error:", e)
-
-            reply = "Failed to read image"
-
-        line_bot_api.reply_message(
+        MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[TextMessage(text=reply)]
@@ -341,9 +221,12 @@ def update_streak(user_id):
         )
 
 
-# ========================
-# Run
-# ========================
+# =========================
+# START SERVER (RENDER)
+# =========================
 
 if __name__ == "__main__":
-    app.run()
+
+    port = int(os.environ.get("PORT", 10000))
+
+    app.run(host="0.0.0.0", port=port)
